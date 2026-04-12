@@ -1,0 +1,563 @@
+{
+  "name": "HireGraph Automated Ingestion",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "message",
+              "value": "[ORCHESTRATOR] Triggering scrape"
+            }
+          ]
+        }
+      },
+      "id": "log-trigger",
+      "name": "Log Trigger",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        440,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:5000/scrape",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"source\": \"wellfound\",\n  \"limit\": 5\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "trigger-scraper",
+      "name": "Trigger Scraper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        260
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json;\nconst jobs = Array.isArray(payload)\n  ? payload\n  : Array.isArray(payload.jobs)\n    ? payload.jobs\n    : Array.isArray(payload.data)\n      ? payload.data\n      : [];\n\nreturn jobs\n  .filter((job) => job && job.url && (job.raw_payload || job.html))\n  .map((job) => ({\n    json: {\n      url: job.url,\n      raw_payload: job.raw_payload || job.html,\n      source_id: job.source_id || 'wellfound',\n      payload_format: job.payload_format || 'text'\n    }\n  }));"
+      },
+      "id": "normalize-scraper-response",
+      "name": "Normalize Scraper Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-jobs",
+      "name": "Split Jobs",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1180,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "message",
+              "value": "=[ORCHESTRATOR] Sending job to pipeline: {{$json[\"url\"]}}"
+            }
+          ]
+        }
+      },
+      "id": "log-send",
+      "name": "Log Send",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1410,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://backend:8000/raw-jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"source_id\": $json.source_id || \"wellfound\",\n  \"source_record_locator\": $json.url,\n  \"payload_format\": $json.payload_format || \"text\",\n  \"raw_payload\": $json.raw_payload,\n  \"ingestion_status\": \"success\",\n  \"observed_at\": $now.toISO(),\n  \"fetched_at\": $now.toISO()\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false
+            }
+          }
+        }
+      },
+      "id": "create-raw-job",
+      "name": "Create Raw Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1650,
+        260
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "raw_id",
+              "value": "={{$json[\"raw_ingestion_id\"]}}"
+            },
+            {
+              "name": "message",
+              "value": "=[ORCHESTRATOR] Processing triggered for raw ingestion {{$json[\"raw_ingestion_id\"]}}"
+            }
+          ]
+        }
+      },
+      "id": "extract-raw-id",
+      "name": "Extract Raw Ingestion ID",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1890,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://backend:8000/process-raw/{{$json[\"raw_id\"]}}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false
+            }
+          }
+        }
+      },
+      "id": "trigger-processing",
+      "name": "Trigger Processing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2130,
+        260
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "message",
+              "value": "=[ORCHESTRATOR] Job processed successfully"
+            }
+          ]
+        }
+      },
+      "id": "log-success",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2360,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "message",
+              "value": "[ORCHESTRATOR] Completed batch"
+            }
+          ]
+        }
+      },
+      "id": "log-batch-complete",
+      "name": "Log Batch Complete",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2590,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hiregraph/manual-ingestion",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "manual-webhook",
+      "name": "Manual Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const jobs = Array.isArray($json)\n  ? $json\n  : Array.isArray($json.jobs)\n    ? $json.jobs\n    : Array.isArray($json.data)\n      ? $json.data\n      : [];\n\nreturn jobs\n  .filter((job) => job && job.url && (job.raw_payload || job.html))\n  .map((job) => ({\n    json: {\n      url: job.url,\n      raw_payload: job.raw_payload || job.html,\n      source_id: job.source_id || 'wellfound',\n      payload_format: job.payload_format || 'text'\n    }\n  }));"
+      },
+      "id": "normalize-webhook-response",
+      "name": "Normalize Webhook Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        470,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-webhook-jobs",
+      "name": "Split Webhook Jobs",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        710,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://backend:8000/raw-jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"source_id\": $json.source_id || \"wellfound\",\n  \"source_record_locator\": $json.url,\n  \"payload_format\": $json.payload_format || \"text\",\n  \"raw_payload\": $json.raw_payload,\n  \"ingestion_status\": \"success\",\n  \"observed_at\": $now.toISO(),\n  \"fetched_at\": $now.toISO()\n}"
+      },
+      "id": "create-webhook-raw-job",
+      "name": "Create Webhook Raw Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        950,
+        520
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "raw_id",
+              "value": "={{$json[\"raw_ingestion_id\"]}}"
+            }
+          ]
+        }
+      },
+      "id": "extract-webhook-raw-id",
+      "name": "Extract Webhook Raw ID",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1190,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://backend:8000/process-raw/{{$json[\"raw_id\"]}}"
+      },
+      "id": "trigger-webhook-processing",
+      "name": "Trigger Webhook Processing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1430,
+        520
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Cron Trigger": {
+      "main": [
+        [
+          {
+            "node": "Log Trigger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Trigger": {
+      "main": [
+        [
+          {
+            "node": "Trigger Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Scraper": {
+      "main": [
+        [
+          {
+            "node": "Normalize Scraper Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Scraper Response": {
+      "main": [
+        [
+          {
+            "node": "Split Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Jobs": {
+      "main": [
+        [
+          {
+            "node": "Log Send",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Log Send": {
+      "main": [
+        [
+          {
+            "node": "Create Raw Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Raw Job": {
+      "main": [
+        [
+          {
+            "node": "Extract Raw Ingestion ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Raw Ingestion ID": {
+      "main": [
+        [
+          {
+            "node": "Trigger Processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Processing": {
+      "main": [
+        [
+          {
+            "node": "Log Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Success": {
+      "main": [
+        [
+          {
+            "node": "Log Batch Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Batch Complete": {
+      "main": [
+        [
+          {
+            "node": "Split Jobs",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Manual Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Webhook Response": {
+      "main": [
+        [
+          {
+            "node": "Split Webhook Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Webhook Jobs": {
+      "main": [
+        [
+          {
+            "node": "Create Webhook Raw Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Create Webhook Raw Job": {
+      "main": [
+        [
+          {
+            "node": "Extract Webhook Raw ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Webhook Raw ID": {
+      "main": [
+        [
+          {
+            "node": "Trigger Webhook Processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Webhook Processing": {
+      "main": [
+        [
+          {
+            "node": "Split Webhook Jobs",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Calcutta",
+    "errorWorkflow": "hiregraph-pipeline-errors"
+  },
+  "versionId": "hiregraph-automated-ingestion-v2",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "hiregraph-automated-ingestion",
+  "tags": []
+}

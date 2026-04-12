@@ -1,0 +1,90 @@
+{
+  "name": "HireGraph Pipeline Errors",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "message",
+              "value": "=[ORCHESTRATOR] Workflow {{$json.workflow?.name || \"unknown\"}} failed at node {{$json.execution?.lastNodeExecuted || \"unknown\"}}"
+            },
+            {
+              "name": "error",
+              "value": "={{$json.execution?.error?.message || $json.error?.message || \"Unknown error\"}}"
+            }
+          ]
+        }
+      },
+      "id": "format-error",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        520,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "console.error($json.message);\nconsole.error(`[ORCHESTRATOR] ${$json.error}`);\nreturn items;"
+      },
+      "id": "console-log",
+      "name": "Console Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        260
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error": {
+      "main": [
+        [
+          {
+            "node": "Console Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Calcutta"
+  },
+  "versionId": "hiregraph-pipeline-errors-v1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "hiregraph-pipeline-errors",
+  "tags": []
+}
