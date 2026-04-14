@@ -13,6 +13,18 @@ DATABASE_URL = os.getenv(
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 
+SKILL_RELATIONSHIPS_SQL = """
+CREATE TABLE IF NOT EXISTS skill_relationships (
+    id BIGSERIAL PRIMARY KEY,
+    skill_a TEXT NOT NULL,
+    skill_b TEXT NOT NULL,
+    co_occurrence_count INTEGER NOT NULL DEFAULT 1,
+    CONSTRAINT uq_skill_relationships_pair UNIQUE (skill_a, skill_b),
+    CONSTRAINT chk_skill_relationships_order CHECK (skill_a < skill_b)
+)
+"""
+
+
 SKILL_DEMAND_MV_SQL = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS skill_demand_mv AS
 SELECT
@@ -101,7 +113,13 @@ MV_INDEX_SQL = [
 
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine)
+    create_skill_relationships_table()
     create_materialized_views()
+
+
+def create_skill_relationships_table() -> None:
+    with engine.begin() as connection:
+        connection.execute(text(SKILL_RELATIONSHIPS_SQL))
 
 
 def create_materialized_views() -> None:
