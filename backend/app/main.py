@@ -300,6 +300,19 @@ def _job_skills_to_vector(job_skills: object) -> dict[str, int]:
     return vector
 
 
+def _deserialize_job_skills(raw_skills: object) -> list[str]:
+    if isinstance(raw_skills, list):
+        return [normalize_skill(str(skill)) for skill in raw_skills if str(skill).strip()]
+    if isinstance(raw_skills, str):
+        try:
+            parsed = json.loads(raw_skills)
+        except Exception:
+            return []
+        if isinstance(parsed, list):
+            return [normalize_skill(str(skill)) for skill in parsed if str(skill).strip()]
+    return []
+
+
 def compute_similarity(job_skills: dict[str, int], user_skills: list[str]) -> float:
     if not job_skills or not user_skills:
         return 0.0
@@ -375,23 +388,34 @@ def _fetch_recommendation_jobs(connection, normalized_user_skills: list[str]) ->
 
 
 def get_recommendations(session: Session, skills: list[str], limit: int = 5) -> list[dict]:
-    if not skills:
+    normalized_user_skills = _normalize_user_skills(skills)
+    if not normalized_user_skills:
         return []
 
     rows = session.execute(
-        text("SELECT * FROM processed_jobs ORDER BY score DESC LIMIT 50")
+        text("SELECT * FROM processed_jobs ORDER BY score DESC NULLS LAST LIMIT 100")
     ).mappings().all()
 
     results: list[dict] = []
 
     for row in rows:
-        job_skills = row.get("skills") or []
-        if isinstance(job_skills, str):
-            job_skills = json.loads(job_skills)
+        job_dict = dict(row)
+        job_skills = _deserialize_job_skills(job_dict.get("skills"))
+        if not job_skills:
+            continue
 
-        if any(skill in job_skills for skill in skills):
-            results.append(dict(row))
+        overlap = set(job_skills) & set(normalized_user_skills)
+        if not overlap:
+            continue
 
+        job_dict["skills"] = job_skills
+        job_dict["_overlap"] = sorted(overlap)
+        results.append(job_dict)
+
+    results.sort(
+        key=lambda item: (float(item.get("score") or 0), item.get("created_at") or ""),
+        reverse=True,
+    )
     return results[:limit]
 
 
@@ -448,23 +472,23 @@ def _run_graph_consistency_check(connection) -> DiagnosticsGraphResponse:
 
 
 def _run_recommendation_validation() -> tuple[DiagnosticsRecommendationResponse, float]:
-    normalized_user_skills = _normalize_user_skills(["python"])
+    test_skills = _normalize_user_skills(["python", "fastapi", "docker", "aws"])
+    print("TEST SKILLS:", test_skills)
     start = time.perf_counter()
-    with Session(engine) as session:
-        recommendations = get_recommendations(session, normalized_user_skills, limit=5)
+    recommendations = recommend_jobs(RecommendJobsRequest(skills=test_skills))
     latency_ms = (time.perf_counter() - start) * 1000
+    print("RECOMMENDATION INPUT:", test_skills)
+    print("RECOMMENDATION OUTPUT:", [item.model_dump() for item in recommendations])
 
-    recommendation_valid = False
-
-    if recommendations:
-        for job in recommendations:
-            job_skills = job.get("skills") or []
-            if isinstance(job_skills, str):
-                job_skills = json.loads(job_skills)
-
-            if any(skill in job_skills for skill in ["python", "fastapi", "docker", "aws"]):
-                recommendation_valid = True
-                break
+    recommendation_valid = (
+        isinstance(recommendations, list)
+        and len(recommendations) > 0
+        and any(item.score > 0 for item in recommendations)
+        and all(
+            recommendations[index].score >= recommendations[index + 1].score
+            for index in range(len(recommendations) - 1)
+        )
+    )
 
     return DiagnosticsRecommendationResponse(recommendation_valid=recommendation_valid), latency_ms
 
@@ -558,6 +582,7 @@ def process_raw_job(
             parsed = _parse_raw_payload(raw_job["raw_payload"] or "")
             skills_dict = _extract_skills(parsed["description"])
             skills = list(skills_dict.keys())
+            print("RAW SKILLS:", skills_dict)
             experience = _extract_experience(parsed["description"]) or "mid"
             role = _classify_role(parsed["title"], parsed["description"]) or "general"
             score = _compute_score(skills_dict, role, experience)
@@ -599,6 +624,7 @@ def process_raw_job(
                     "score": score,
                 },
             )
+            print("DB SKILLS:", skills)
 
             for skill_a, skill_b in skill_pairs:
                 connection.execute(
@@ -657,14 +683,14 @@ def recommend_jobs(payload: RecommendJobsRequest) -> list[RecommendJobResponse]:
         recommendations: list[RecommendJobResponse] = []
 
         for job in jobs:
-            job_skills = _job_skills_to_vector(job["skills"])
+            job_skills = _job_skills_to_vector(job.get("skills"))
             if not job_skills:
                 continue
 
             overlap = set(job_skills) & set(normalized_user_skills)
             score = 0.0
             for skill in overlap:
-                score += SKILL_WEIGHTS.get(skill, 1)
+                score += SKILL_WEIGHTS.get(skill, 1) * job_skills.get(skill, 1)
             logger.info(
                 "[RECOMMEND] job_id=%s, skills=%s, score=%.4f, overlap=%s",
                 job["id"],
@@ -698,25 +724,20 @@ def recommend_jobs(payload: RecommendJobsRequest) -> list[RecommendJobResponse]:
 def run_diagnostics() -> DiagnosticsReport:
     try:
         with engine.begin() as connection:
+            pipeline_integrity = _run_pipeline_integrity_check(connection)
             graph = _run_graph_consistency_check(connection)
 
         skill_extraction = _run_skill_extraction_validation()
         scoring = _run_scoring_validation()
         recommendation, latency_ms = _run_recommendation_validation()
         edge_cases = _run_edge_case_validation()
-        pipeline_integrity = (
-            skill_extraction.frequency_correct
-            and scoring.match
-            and graph.graph_valid
-            and recommendation.recommendation_valid
-        )
         performance = DiagnosticsPerformanceResponse(
             latency_ms=round(latency_ms, 2),
             performance_ok=latency_ms < 300,
         )
 
         checks = [
-            pipeline_integrity,
+            pipeline_integrity == "pass",
             skill_extraction.frequency_correct,
             scoring.match,
             graph.graph_valid,
@@ -726,7 +747,7 @@ def run_diagnostics() -> DiagnosticsReport:
         ]
 
         return DiagnosticsReport(
-            pipeline_integrity="pass" if pipeline_integrity else "fail",
+            pipeline_integrity=pipeline_integrity,
             skill_extraction=skill_extraction,
             scoring=scoring,
             graph=graph,
